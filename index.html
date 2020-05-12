@@ -1,0 +1,460 @@
+<!DOCTYPE html>
+<html lang="en">
+	<head>
+		<title>haha benis</title>
+		<meta charset="utf-8">
+		<meta name="viewport" content="width=device-width, user-scalable=no, minimum-scale=1.0, maximum-scale=1.0">
+		<style>
+			body {
+				background-color: #cce0ff;
+				color: #000;
+			}
+			a {
+				color: #080;
+			}
+		</style>
+	</head>
+
+	<body>		
+		<script id="vertexShader" type="x-shader/x-vertex">
+		uniform vec3 viewVector;
+		uniform float c;
+		uniform float p;
+		varying float intensity;
+		void main() 
+		{
+			vec3 vNormal = normalize( normalMatrix * normal );
+			vec3 vNormel = normalize( normalMatrix * viewVector );
+			intensity = pow( c - dot(vNormal, vNormel), p );
+			
+			gl_Position = projectionMatrix * modelViewMatrix * vec4( position, 1.0 );
+		}
+		</script>
+		
+		<script id="fragmentShader" type="x-shader/x-vertex"> 
+		uniform vec3 glowColor;
+		varying float intensity;
+		void main() 
+		{
+			vec3 glow = glowColor * intensity;
+			gl_FragColor = vec4( glow, 1.0 );
+		}
+		</script>
+
+		<script src="./node_modules/ccapture.js/build/CCapture.all.min.js"></script>
+		
+		<script type="module">
+			import * as THREE from './node_modules/three/build/three.module.js';//'https://cdnjs.cloudflare.com/ajax/libs/three.js/110/three.module.js';
+			import { EffectComposer } from './node_modules/three/examples/jsm/postprocessing/EffectComposer.js';//Glowy thingy
+			import { RenderPass } from './node_modules/three/examples/jsm/postprocessing/RenderPass.js';//Glowy
+			import { UnrealBloomPass } from './node_modules/three/examples/jsm/postprocessing/UnrealBloomPass.js';//Glowy thingy
+			import { ComplexArray } from './node_modules/jsfft-master/lib/fft.js';//For making FFT
+			import { Audio } from './node_modules/audio/audio.js';//For playing music
+			
+			
+			var recording=false;
+			var FPS=60;
+			var resX=800;
+			var resY=400;
+			var capturer = new CCapture({
+				format: 'png',
+				framerate: FPS,
+				verbose: true,
+				autoSaveTime: 30,
+				timeLimit: 210
+			});
+			var frame=0;
+			
+			
+			// Scene effects
+			var exposure = 0.7;
+			var bloomStrength = 1;
+			var bloomThreshold = 0;
+			var bloomRadius = 0.2;
+			
+			// Scene stuff
+			var container, stats;
+			var renderScene;
+			var composer;
+			var camera, scene, renderer;
+
+			// animations
+			var boxPosition = new THREE.Vector3(0, 100, 0);
+			var planePosition = new THREE.Vector3(0, -100, -100);
+			var boxRotation = new THREE.Euler(0, 0, 0,'XYZ');
+			var cubeSize = 130;//absolute size of scale 1 cube
+			var cubescale=0;//internal, dont change
+			var cubesmallment=5;//how fast it becomes smaller, big=faster
+			var cubefactor=35;//how big is big cube
+			var cubeaccel=0.25;//how different is big cube from small cube, small=less
+			var cubecolor=new THREE.Color();
+			var bufferlength;//num of samples used to get a spectrum
+			var extratimeoffset=500;//fix for timing
+			var specNormalization=1.3;//how equal the specturm (small=more equal), >0
+			var specScale = 1.2;//how high the spectrum mountains are
+			var specResolution = 0.02;//how many ms to take per frame to make a spectrum
+			
+			var counter=0;
+			var song;
+			var wave;
+			
+			var spectrum=new Array(spectrumSnapshots);
+			var time,starttime,songoffset;
+			var originalPositionAttribute;
+			var CUBE, PLANE;
+			var wireP;
+			var planesegsX=25;//must be odd
+			var planesegsY=33;//must be odd
+			var spectrumSnapshots=planesegsY;
+			var planeThickness=6;
+			var planeSizeX=2500;
+			var planeSizeY=3300;
+			var cameraStop=Math.max(planeSizeX,planeSizeY)*0.65;
+			var cameraStart=Math.max(planeSizeX,planeSizeY)*0.2;
+			var cameraHeight=220;
+			
+			var audioCtx = new (window.AudioContext || window.webkitAudioContext)();
+			function getAudioData() {
+				song = audioCtx.createBufferSource();
+				var request = new XMLHttpRequest();
+				request.open('GET', 'song44.wav', true);
+				request.responseType = 'arraybuffer';
+				request.onload = function() {
+				var audioData = request.response;
+				audioCtx.decodeAudioData(audioData, function(buffer) {
+					song.buffer = buffer;
+					song.connect(audioCtx.destination);
+					song.loop = false;
+				  },
+				  function(e){ console.log("Error with decoding audio data" + e.err); });
+				}
+				request.send();
+			}
+			
+			// This is where positions, scales and rotations should happen
+			function simulate() {
+				if(song.buffer!=null){
+					if(counter==1){
+						calcSpectrum();
+						changeXYZ(wireP,noth,noth,fz);
+						spectrum.shift();
+						counter=0;
+					}
+					else{
+						counter++;
+					}
+				}
+				
+				boxRotation.z = - Math.sin( time / 2000 ) * 3; 
+				boxRotation.x = Math.cos( time / 853 ) * 2
+				
+				var cs=cubescale/bufferlength*cubefactor;
+				if(cs<1){
+					cs=1;
+				}
+				
+				//camera.position.copy(new THREE.Vector3(0,cameraHeight,Math.min(cameraStop/cameraStart*(time-starttime)/10),cameraStop));
+				CUBE.scale.copy(new THREE.Vector3(cs**cubeaccel,cs**cubeaccel,cs**cubeaccel));
+				CUBE.position.copy(boxPosition);
+				CUBE.rotation.copy(boxRotation);
+				CUBE.material.emissive.copy(cubecolor);
+				CUBE.material.color.copy(cubecolor);
+			}
+
+			function wirePlane2(length,width,segx,segy,linethicc){
+				var shape = new THREE.Shape();
+				var hole = new THREE.Shape();
+				var i,j;
+				var offsetx=0.0;
+				var offsety=0.0;
+				var material = new THREE.MeshNormalMaterial();
+				var r=new THREE.Mesh(new THREE.BoxGeometry( 0.2, 0.2, 0.2 ), material );
+				
+				for(offsetx=0;offsetx<length;offsetx+=length/segx){
+					for(offsety=0;offsety<width;offsety+=width/segy){
+						shape.moveTo(offsetx,offsety);
+						shape.lineTo(offsetx,width/segy+offsety);
+						shape.lineTo(length/segx+offsetx,width/segy+offsety);
+						shape.lineTo(length/segx+offsetx,offsety);
+						
+						hole.moveTo(linethicc/2+offsetx,               linethicc/2+offsety);
+						hole.lineTo(length/(segx)-linethicc/2+offsetx, linethicc/2+offsety);
+						hole.lineTo(length/(segx)-linethicc/2+offsetx, width/(segy)-linethicc/2+offsety);
+						hole.lineTo(linethicc/2+offsetx,               width/(segy)-linethicc/2+offsety);
+						shape.holes.push(hole);	
+								
+						var extrusionSettings = {
+							depth: linethicc,
+							bevelEnabled: false,
+							bevelThickness: linethicc/2,
+							bevelSize: linethicc/2,
+							bevelSegments: 1,
+							material: 0,
+							extrudeMaterial: 1
+						};
+						var extrusion=new THREE.Mesh(new THREE.ExtrudeGeometry(shape, extrusionSettings),material);
+						r.geometry.merge(extrusion.geometry, extrusion.matrix);
+						shape=new THREE.Shape();
+						hole=new THREE.Shape();
+					}
+				}
+				return new THREE.BufferGeometry().fromGeometry(r.geometry);
+			}
+				
+			function changeXYZ(geom,tfx,tfy,tfz){
+				var t=time;
+				// modify geometry
+				var positionAttribute = geom.attributes.position;
+				for ( var i = 0; i < positionAttribute.count; i ++ ) {
+					
+					// access single vertex (x,y,z)
+					var x = originalPositionAttribute.getX( i );
+					var y = originalPositionAttribute.getY( i );
+					var z = originalPositionAttribute.getZ( i );
+					
+					// modify data (tf are functions that return a translation in that dir)
+					var test=tfz(x,y,z,t);
+					if(!isNaN(test)){
+						z = z+test;
+					}
+
+					// write data back to attribute
+					positionAttribute.setXYZ( i, x, y, z );
+				}
+				geom.attributes.position.clone(positionAttribute);
+				geom.attributes.position.needsUpdate = true;
+			}
+				
+			function calcSpectrum(){
+				spectrum[spectrumSnapshots-1]=new ComplexArray(bufferlength);
+				var dt=song.context.currentTime;//in seconds
+				if(recording){
+					dt=time/1000;//Time since start in seconds
+				}
+				var startsample=Math.floor(dt*song.buffer.sampleRate);//TODO: what the fuck is wrong with sample rate foobar says 44100 and html says 48000 the 0.9...  fixes that
+				var nowBuffering = song.buffer.getChannelData(0);//TODO: make it for multi channel
+				var i;
+				var sum=0;
+				sum=0;
+				for (i = startsample; i < (startsample+bufferlength)&& i<song.buffer.length; i++) {//this can be done with data.map
+					spectrum[spectrumSnapshots-1].real[i-startsample]=nowBuffering[i];
+					sum+=Math.abs(nowBuffering[i]);//hacky fix 
+				}
+				if(sum>cubescale){
+					cubescale=sum;
+				}else{
+					cubescale-=cubesmallment;
+				}
+				
+				spectrum[spectrumSnapshots-1]=spectrum[spectrumSnapshots-1].frequencyMap((freq, i, n) => {if(i>=n/6&&i<=5*n/6){freq.real*=3;}});//band pass the music to make a valley in the middle and low at edges, and do the high freq stronger
+				spectrum[spectrumSnapshots-1]=spectrum[spectrumSnapshots-1].FFT();//make specturm
+				//spectrum[spectrumSnapshots-1]=spectrum[spectrumSnapshots-1].frequencyMap((freq, i, n) => {if (i > n/5 && i < 4*n/5) {freq.real = 0;freq.imag = 0;}});//low pass the spectrum
+				
+				//consolidate the max of each freq range to the first planesges elements of the specturm reals array
+				var k=0;
+				
+				var split=bufferlength/planesegsX;
+				for(k=0;k<planesegsX;k++){
+					spectrum[spectrumSnapshots-1].real[k]=0;
+					for( i=Math.round(split*k); i<split*k+Math.floor(split);i++){
+						if(Math.abs(spectrum[spectrumSnapshots-1].real[i]>spectrum[spectrumSnapshots-1].real[k])){
+							spectrum[spectrumSnapshots-1].real[k]=Math.abs(spectrum[spectrumSnapshots-1].real[i]);
+						}
+					}
+				}
+				
+				var avgb=0,avgg=0,avgr=0;
+				for (i=spectrumSnapshots-1;i>=spectrumSnapshots/2;i--){
+					if(!(typeof spectrum[i] === 'undefined')) {
+						avgb+=spectrum[i].real[0];//bass
+						avgg+=spectrum[i].real[4];//mid
+						avgr+=spectrum[i].real[8];//treble
+					}
+				}
+				avgb=Math.min(Math.max(0,avgb/spectrumSnapshots),1);
+				avgg=Math.min(Math.max(0,avgg/spectrumSnapshots),1);
+				avgr=Math.min(Math.max(0,avgr/spectrumSnapshots),1);
+				
+				cubecolor.setRGB(avgr*1.5,avgg/5,avgb/1.3);//change factors to get colorscheme
+				var hsl=new Object();
+				cubecolor.getHSL(hsl);
+				cubecolor.setHSL(hsl.h,0.8,0.5);
+			}
+			
+			function fz(x,y,z,t){
+				var Xindex=Math.max(0,Math.min(planesegsX,Math.floor((x+planeThickness)*planesegsX/planeSizeX)));
+				if(Xindex>planesegsX/2){
+					Xindex--;
+				}
+				if(spectrum==null){
+					return z;
+				}
+				var Yindex=spectrumSnapshots-1;
+				if(spectrum.length==spectrumSnapshots){
+					//if(y<60){Yindex=0;}
+					//else{
+						Yindex=Math.min(spectrumSnapshots-1,Math.floor((y+planeThickness)*(planesegsY)/planeSizeY));
+					//}
+				}
+				try{
+					return Math.abs(spectrum[Yindex].real[Xindex]*100)**specNormalization*specScale;
+				}catch(err){
+					return z;
+				}
+			}
+			
+			function noth(x,y,z,t){
+				return x;
+			}
+			
+			function syncHack(){
+				if(song.buffer!=null){
+					console.log("song loaded, sample rate: "+song.buffer.sampleRate+",lengt/duration:"+song.buffer.length/song.buffer.duration);
+					if(recording){
+						songoffset=0;
+						starttime=0;
+					}
+					else{
+						starttime=Date.now()-extratimeoffset;
+					}
+					bufferlength=specResolution*song.buffer.sampleRate;//samples to make the diagram from
+					for(var i=0;i<spectrumSnapshots;i++){
+						spectrum[i] = new ComplexArray(bufferlength);
+					}
+				}else{
+					console.log("waiting");
+					setTimeout(syncHack, 100); // try again in 300 milliseconds
+				}
+			}
+
+			function init() {
+				getAudioData();
+				syncHack();
+				if(!recording){
+					song.start();
+				}
+				starttime=0;
+				
+				var butt=document.createElement('button');
+				butt.setAttribute("id", "butt");
+				document.body.appendChild(butt);
+				document.getElementById("butt").innerHTML = "play/pause"
+				document.getElementById("butt").addEventListener("click", () => {
+					if (song.context.state=="suspended"){
+						song.context.resume();
+						capturer.start();
+					}else{
+						song.context.suspend();
+						capturer.stop();
+						capturer.save();
+					}
+				});
+
+				// make window to draw in
+				container = document.createElement('div');
+				container.setAttribute("id","canvas");
+				document.body.appendChild(container);
+				
+				// renderer
+				renderer = new THREE.WebGLRenderer( {antialias:true} );
+				renderer.setPixelRatio( window.devicePixelRatio );
+				renderer.setSize( resX, resY );
+				renderer.toneMapping = THREE.LinearToneMapping;
+				renderer.outputEncoding = THREE.sRGBEncoding;
+				renderer.shadowMap.enabled = true;
+				
+				container.appendChild( renderer.domElement );
+				
+				// scene
+				scene = new THREE.Scene();
+				scene.background = new THREE.Color(0x000000);
+				scene.fog = new THREE.Fog(0x000000, 500, 10000);
+
+				// camera
+				camera = new THREE.PerspectiveCamera(45, resX / resY, 1, 10000);
+				camera.position.set(0, cameraHeight, cameraStop);
+				
+				// lights
+				scene.add( new THREE.AmbientLight(0x222222));
+				var light = new THREE.DirectionalLight(0xffffff, 1);
+				light.position.set(50, 200, 100);
+				light.position.multiplyScalar(1.3);
+				light.castShadow = false;
+				scene.add(light);
+
+				// renderer fx
+				renderScene = new RenderPass(scene, camera);
+				var bloomPass = new UnrealBloomPass(new THREE.Vector2(resX, resY), 1.5, 0.4, 0.85 );
+				bloomPass.threshold = bloomThreshold;
+				bloomPass.strength = bloomStrength;
+				bloomPass.radius = bloomRadius;
+				composer = new EffectComposer(renderer);
+				composer.addPass(renderScene);
+				composer.addPass(bloomPass);
+				
+				// box
+				CUBE = new THREE.Mesh(
+					new THREE.BoxBufferGeometry
+					(
+						cubeSize,
+						cubeSize,
+						cubeSize
+					),
+					new THREE.MeshLambertMaterial
+					({
+						color : 0xff32ff,
+						emissiveIntensity:0.3
+					})
+				);
+				scene.add( CUBE );
+				
+				wireP=wirePlane2(planeSizeX,planeSizeY,planesegsX,planesegsY,planeThickness);
+
+				PLANE=new THREE.Mesh(wireP,new THREE.MeshLambertMaterial
+					({
+						color : 0x323280,
+						emissive: 0x323280,
+						emissiveIntensity:1
+					}));
+				PLANE.rotation.copy(new THREE.Euler(-1.571,0,0,'XYZ'));
+				PLANE.position.copy(new THREE.Vector3(-planeSizeX/2,-100,planeSizeY/2));
+				originalPositionAttribute = wireP.attributes.position.clone();
+				scene.add( PLANE );
+				if(recording){
+					capturer.start();
+				}
+			}
+
+			// No need to edit this
+			function onWindowResize() {
+				camera.aspect = resX / resY;
+				camera.updateProjectionMatrix();
+				renderer.setSize(resX, resY);
+			}
+
+			// No need to edit this
+			function animate() {
+				requestAnimationFrame(animate);
+				if(recording){
+					time = frame*1000/FPS;
+				}else{
+					time=Date.now();
+				}
+				simulate();
+				render();
+				if(recording){
+					capturer.capture(renderer.domElement);
+				}
+				frame++;
+			}
+			
+			// No need to edit this
+			function render() {
+				composer.render();
+			}
+			
+			init();
+			animate();
+		</script>
+	</body>
+</html>
